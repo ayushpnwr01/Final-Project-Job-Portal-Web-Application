@@ -1,0 +1,304 @@
+1. Enhanced User Roles System
+
+Database Models (Django version):
+
+# models.py
+from django.contrib.auth.models import AbstractUser
+from django.db import models
+
+class User(AbstractUser):
+    USER_TYPES = (
+        ('jobseeker', 'Job Seeker'),
+        ('employer', 'Employer'),
+        ('admin', 'Admin')
+    )
+    user_type = models.CharField(max_length=10, choices=USER_TYPES)
+    resume = models.FileField(upload_to='resumes/', null=True, blank=True)
+    company_name = models.CharField(max_length=100, blank=True)
+
+class JobCategory(models.Model):
+    name = models.CharField(max_length=50)
+    
+class Job(models.Model):
+    JOB_TYPES = (
+        ('full-time', 'Full-time'),
+        ('part-time', 'Part-time'),
+        ('contract', 'Contract'),
+        ('internship', 'Internship')
+    )
+    
+    title = models.CharField(max_length=100)
+    description = models.TextField()
+    location = models.CharField(max_length=100)
+    salary = models.CharField(max_length=50)
+    job_type = models.CharField(max_length=20, choices=JOB_TYPES)
+    category = models.ForeignKey(JobCategory, on_delete=models.SET_NULL, null=True)
+    company = models.CharField(max_length=100)
+    employer = models.ForeignKey(User, on_delete=models.CASCADE)
+    posted_at = models.DateTimeField(auto_now_add=True)
+    is_active = models.BooleanField(default=True)
+
+class Application(models.Model):
+    STATUS_CHOICES = (
+        ('pending', 'Pending'),
+        ('reviewed', 'Reviewed'),
+        ('rejected', 'Rejected'),
+        ('accepted', 'Accepted')
+    )
+    
+    job = models.ForeignKey(Job, on_delete=models.CASCADE)
+    applicant = models.ForeignKey(User, on_delete=models.CASCADE)
+    cover_letter = models.TextField()
+    applied_at = models.DateTimeField(auto_now_add=True)
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='pending')
+
+2. Complete Feature Implementation
+
+A. User Authentication (Django):
+
+# views.py
+from django.contrib.auth import login, authenticate
+from django.shortcuts import render, redirect
+
+def register(request):
+    if request.method == 'POST':
+        form = CustomUserCreationForm(request.POST)
+        if form.is_valid():
+            user = form.save()
+            login(request, user)
+            return redirect('home')
+    else:
+        form = CustomUserCreationForm()
+    return render(request, 'registration/register.html', {'form': form})
+
+def user_login(request):
+    if request.method == 'POST':
+        form = AuthenticationForm(request, data=request.POST)
+        if form.is_valid():
+            username = form.cleaned_data.get('username')
+            password = form.cleaned_data.get('password')
+            user = authenticate(username=username, password=password)
+            if user is not None:
+                login(request, user)
+                return redirect('home')
+    else:
+        form = AuthenticationForm()
+    return render(request, 'registration/login.html', {'form': form})
+
+B. Job Posting & Management:
+
+# views.py
+@login_required
+def post_job(request):
+    if request.user.user_type != 'employer':
+        return HttpResponseForbidden()
+    
+    if request.method == 'POST':
+        form = JobPostForm(request.POST)
+        if form.is_valid():
+            job = form.save(commit=False)
+            job.employer = request.user
+            job.save()
+            return redirect('job_detail', job_id=job.id)
+    else:
+        form = JobPostForm()
+    return render(request, 'jobs/post.html', {'form': form})
+
+@login_required
+def my_jobs(request):
+    jobs = Job.objects.filter(employer=request.user)
+    return render(request, 'jobs/my_jobs.html', {'jobs': jobs})
+
+C. Job Search with Filters:
+
+# views.py
+def job_search(request):
+    query = request.GET.get('q', '')
+    location = request.GET.get('location', '')
+    category = request.GET.get('category', '')
+    job_type = request.GET.get('job_type', '')
+    
+    jobs = Job.objects.filter(is_active=True)
+    
+    if query:
+        jobs = jobs.filter(
+            Q(title__icontains=query) |
+            Q(description__icontains=query) |
+            Q(company__icontains=query)
+        )
+    
+    if location:
+        jobs = jobs.filter(location__icontains=location)
+    
+    if category:
+        jobs = jobs.filter(category__id=category)
+    
+    if job_type:
+        jobs = jobs.filter(job_type=job_type)
+    
+    categories = JobCategory.objects.all()
+    
+    return render(request, 'jobs/search.html', {
+        'jobs': jobs,
+        'categories': categories,
+        'search_params': request.GET
+    })
+
+
+D. Application System:
+
+# views.py
+@login_required
+def apply_job(request, job_id):
+    job = get_object_or_404(Job, pk=job_id)
+    
+    if request.user.user_type != 'jobseeker':
+        return HttpResponseForbidden()
+    
+    if Application.objects.filter(job=job, applicant=request.user).exists():
+        messages.warning(request, 'You have already applied for this job')
+        return redirect('job_detail', job_id=job.id)
+    
+    if request.method == 'POST':
+        form = ApplicationForm(request.POST, request.FILES)
+        if form.is_valid():
+            application = form.save(commit=False)
+            application.job = job
+            application.applicant = request.user
+            application.save()
+            messages.success(request, 'Application submitted successfully!')
+            return redirect('job_detail', job_id=job.id)
+    else:
+        form = ApplicationForm()
+    
+    return render(request, 'jobs/apply.html', {'form': form, 'job': job})
+
+3. Admin Panel Customization
+
+# admin.py
+from django.contrib import admin
+from .models import User, Job, Application
+
+class UserAdmin(admin.ModelAdmin):
+    list_display = ('username', 'email', 'user_type')
+    list_filter = ('user_type',)
+    search_fields = ('username', 'email')
+
+class JobAdmin(admin.ModelAdmin):
+    list_display = ('title', 'company', 'location', 'job_type', 'is_active')
+    list_filter = ('job_type', 'is_active')
+    search_fields = ('title', 'company', 'description')
+
+class ApplicationAdmin(admin.ModelAdmin):
+    list_display = ('job', 'applicant', 'status', 'applied_at')
+    list_filter = ('status',)
+    search_fields = ('job__title', 'applicant__username')
+
+admin.site.register(User, UserAdmin)
+admin.site.register(Job, JobAdmin)
+admin.site.register(Application, ApplicationAdmin)
+
+
+4. API Integration (Indeed/Glassdoor)
+
+
+# utils.py
+import requests
+from django.conf import settings
+
+def fetch_indeed_jobs(params):
+    base_url = "https://api.indeed.com/ads/apisearch"
+    default_params = {
+        'publisher': settings.INDEED_PUBLISHER_ID,
+        'v': '2',
+        'format': 'json',
+        'latlong': 1,
+        'co': 'us',  # Country
+        'userip': '1.2.3.4',
+        'useragent': 'Mozilla/5.0'
+    }
+    
+    params = {**default_params, **params}
+    
+    try:
+        response = requests.get(base_url, params=params)
+        response.raise_for_status()
+        return response.json().get('results', [])
+    except requests.RequestException as e:
+        print(f"Error fetching Indeed jobs: {e}")
+        return []
+
+5. Frontend Components
+Job Search Filters (HTML/Bootstrap):
+
+
+<!-- templates/jobs/search.html -->
+<form method="get" action="{% url 'job_search' %}">
+    <div class="row g-3 mb-4">
+        <div class="col-md-5">
+            <input type="text" name="q" class="form-control" placeholder="Job title, keywords" value="{{ search_params.q }}">
+        </div>
+        <div class="col-md-3">
+            <input type="text" name="location" class="form-control" placeholder="Location" value="{{ search_params.location }}">
+        </div>
+        <div class="col-md-2">
+            <select name="category" class="form-select">
+                <option value="">All Categories</option>
+                {% for cat in categories %}
+                <option value="{{ cat.id }}" {% if search_params.category == cat.id|stringformat:"s" %}selected{% endif %}>
+                    {{ cat.name }}
+                </option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-2">
+            <button type="submit" class="btn btn-primary w-100">Search</button>
+        </div>
+    </div>
+    
+    <div class="row mb-4">
+        <div class="col">
+            <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="job_type" id="all-types" value="" {% if not search_params.job_type %}checked{% endif %}>
+                <label class="form-check-label" for="all-types">All Types</label>
+            </div>
+            <div class="form-check form-check-inline">
+                <input class="form-check-input" type="radio" name="job_type" id="full-time" value="full-time" {% if search_params.job_type == 'full-time' %}checked{% endif %}>
+                <label class="form-check-label" for="full-time">Full-time</label>
+            </div>
+            <!-- Add other job types -->
+        </div>
+    </div>
+</form>
+
+6. Deployment Ready Configuration
+settings.py (Key Configurations):
+
+# Database
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': 'jobportal',
+        'USER': 'jobportal_user',
+        'PASSWORD': os.getenv('DB_PASSWORD'),
+        'HOST': 'localhost',
+        'PORT': '5432',
+    }
+}
+
+# Media files
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+
+# Authentication
+AUTH_USER_MODEL = 'app.User'
+LOGIN_URL = '/login/'
+LOGIN_REDIRECT_URL = '/'
+LOGOUT_REDIRECT_URL = '/'
+
+# Security
+SECURE_SSL_REDIRECT = True  # In production
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = True
+
+
